@@ -1,0 +1,76 @@
+# Matching Probabilístico com Mahalanobis
+
+# Estimativa do perfil mais provável com base em distância estatística robusta.
+
+## Etapa 1 — Imports e Setup
+
+import pandas as pd
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.covariance import MinCovDet
+from scipy.spatial import distance
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+## Etapa 2 — Simulação de Dados RFMT
+
+np.random.seed(42)
+df = pd.DataFrame({
+    "idcliente": range(100),
+    "frequencia_total": np.random.poisson(10, 100),
+    "ticket_medio": np.random.normal(50, 15, 100),
+    "recencia_exponencial": np.random.beta(2, 5, 100),
+    "quantidade_media": np.random.normal(3, 1, 100)
+})
+
+## Etapa 3 — Centroides Heurísticos
+
+centroides = pd.DataFrame({
+    "frequencia_total": [5, 15],
+    "ticket_medio": [40, 60],
+    "recencia_exponencial": [0.3, 0.7],
+    "quantidade_media": [2, 4]
+}, index=["perfil_1", "perfil_2"])
+
+## Etapa 4 — Cálculo da Distância Mahalanobis com Robustez
+
+features = ["frequencia_total", "ticket_medio", "recencia_exponencial", "quantidade_media"]
+X = df[features].values
+
+try:
+    mcd = MinCovDet().fit(X)
+    cov = mcd.covariance_
+    cov += np.eye(cov.shape[0]) * 1e-3
+    cov_inv = np.linalg.inv(cov)
+except:
+    cov_inv = None  # fallback
+
+resultados = []
+for _, row in df.iterrows():
+    cliente_id = row["idcliente"]
+    x = row[features].values
+    dists = []
+    for nome, centro in centroides.iterrows():
+        mu = centro.values
+        dist = distance.mahalanobis(x, mu, cov_inv) if cov_inv is not None else np.linalg.norm(x - mu)
+        dists.append((nome, dist))
+    dist_array = np.array([d for _, d in dists])
+    scores = np.exp(-1.0 * dist_array)
+    probs = scores / scores.sum()
+    perfil = dists[np.argmin(dist_array)][0]
+    resultados.append({
+        "idcliente": cliente_id,
+        "perfil_estimado": perfil,
+        "prob_perfil_1": probs[0],
+        "prob_perfil_2": probs[1]
+    })
+
+df_result = pd.DataFrame(resultados)
+
+## Etapa 5 — Visualização das Probabilidades
+
+sns.histplot(data=df_result, x="prob_perfil_1", hue="perfil_estimado", kde=True)
+plt.title("Distribuição da Probabilidade de Pertencer ao Perfil 1")
+plt.xlabel("Probabilidade")
+plt.ylabel("Frequência")
+plt.show()
