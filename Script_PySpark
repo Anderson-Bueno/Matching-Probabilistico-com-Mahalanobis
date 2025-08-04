@@ -1,0 +1,120 @@
+Exemplo de como o script original poderia ser reescrito para PySpark. 
+
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import ArrayType, DoubleType
+import numpy as np
+from scipy.spatial import distance
+# Não usaremos sklearn.covariance.MinCovDet diretamente em PySpark para o cálculo distribuído da covariância robusta.
+# Para este exemplo, calcularemos uma covariância simples para demonstração.
+# Para robustez, você precisaria de uma implementação distribuída de M-estimators ou similar, o que é complexo.
+
+
+# Etapa 1 — Imports e Setup da SparkSession
+spark = SparkSession.builder \
+    .appName("MahalanobisMatching") \
+    .getOrCreate()
+
+# Etapa 2 — Simulação de Dados RFMT como Spark DataFrame
+np.random.seed(42)
+num_clientes = 100
+data = []
+for i in range(num_clientes):
+    data.append((
+        i,
+        int(np.random.poisson(10)),
+        float(np.random.normal(50, 15)),
+        float(np.random.beta(2, 5)),
+        float(np.random.normal(3, 1))
+    ))
+
+df_spark = spark.createDataFrame(data, ["idcliente", "frequencia_total", "ticket_medio", "recencia_exponencial", "quantidade_media"])
+df_spark.cache() # Cache the DataFrame as it will be used multiple times
+
+# Etapa 3 — Centroides Heurísticos como um dicionário ou lista
+centroides = {
+    "perfil_1": np.array([5, 40, 0.3, 2]),
+    "perfil_2": np.array([15, 60, 0.7, 4])
+}
+
+features = ["frequencia_total", "ticket_medio", "recencia_exponencial", "quantidade_media"]
+
+# Etapa 4 — Cálculo da Distância Mahalanobis com Covariância Simples (Não Robusta)
+# Para um cálculo robusto e distribuído da covariância, seria necessário um algoritmo mais complexo.
+# Aqui, calculamos a matriz de covariância empírica simples.
+# Coleta dos dados para cálculo da covariância (pode ser inviável para grandes datasets)
+# Uma alternativa seria usar DataFrame.stat.cov() para cov simples
+collected_data = df_spark.select(features).toPandas().values
+cov_matrix = np.cov(collected_data, rowvar=False)
+cov_matrix += np.eye(cov_matrix.shape[0]) * 1e-3 # Adiciona pequena diagonal para evitar singularidade
+cov_inv = np.linalg.inv(cov_matrix)
+
+# Broadcast da matriz de covariância inversa para os workers
+broadcast_cov_inv = spark.sparkContext.broadcast(cov_inv)
+
+# Definindo uma UDF para calcular a distância Mahalanobis
+def calculate_mahalanobis(features_vector):
+    x = np.array(features_vector)
+    dists = []
+    for nome, centro in centroides.items():
+        mu = centro
+        # Usar a matriz de covariância inversa broadcastada
+        dist = distance.mahalanobis(x, mu, broadcast_cov_inv.value)
+        dists.append((nome, dist))
+    return dists
+
+# Registrar a UDF
+mahalanobis_udf_schema = ArrayType(ArrayType(DoubleType())) # Isso seria para retornar (nome_hash, dist)
+# Uma UDF mais simples para retornar as distâncias diretamente para cada perfil
+def mahalanobis_distances_udf(frequencia_total, ticket_medio, recencia_exponencial, quantidade_media):
+    x = np.array([frequencia_total, ticket_medio, recencia_exponencial, quantidade_media])
+    dists = []
+    for nome, centro in centroides.items():
+        mu = centro
+        dist = distance.mahalanobis(x, mu, broadcast_cov_inv.value)
+        dists.append(float(dist)) # Retorna apenas o valor da distância
+    return dists
+
+mahalanobis_dist_udf = F.udf(mahalanobis_distances_udf, ArrayType(DoubleType()))
+
+# Aplicar a UDF ao DataFrame Spark
+df_with_dists = df_spark.withColumn("mahalanobis_dists", mahalanobis_dist_udf(F.struct(*features)))
+
+# Calcular scores, probabilidades e perfil estimado
+df_result = df_with_dists.withColumn("scores", F.array_transform(F.col("mahalanobis_dists"), lambda d: F.exp(-1.0 * d))) \
+                         .withColumn("scores_sum", F.array_sum(F.col("scores")))
+
+df_result = df_result.withColumn("probs", F.array_transform(F.col("scores"), lambda s: s / F.col("scores_sum")))
+
+# Extrair probabilidades para cada perfil
+df_result = df_result.withColumn("prob_perfil_1", F.element_at(F.col("probs"), 1)) \
+                     .withColumn("prob_perfil_2", F.element_at(F.col("probs"), 2))
+
+# Determinar o perfil estimado (o de menor distância)
+# O índice do menor valor na lista de distâncias corresponde ao perfil
+# Supondo que 'perfil_1' é o primeiro e 'perfil_2' o segundo na lista de centroides
+def get_perfil_estimado(dists_list):
+    if dists_list[0] < dists_list[1]:
+        return "perfil_1"
+    else:
+        return "perfil_2"
+
+perfil_estimado_udf = F.udf(get_perfil_estimado, StringType())
+
+df_result = df_result.withColumn("perfil_estimado", perfil_estimado_udf(F.col("mahalanobis_dists")))
+
+# Selecionar colunas finais e coletar (para visualização local)
+df_final_pandas = df_result.select("idcliente", "perfil_estimado", "prob_perfil_1", "prob_perfil_2").toPandas()
+
+# Etapa 5 — Visualização das Probabilidades (ainda com matplotlib/seaborn em Pandas DataFrame)
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.histplot(data=df_final_pandas, x="prob_perfil_1", hue="perfil_estimado", kde=True)
+plt.title("Distribuição da Probabilidade de Pertencer ao Perfil 1")
+plt.xlabel("Probabilidade")
+plt.ylabel("Frequência")
+plt.show()
+
+# Parar a SparkSession
+spark.stop()
