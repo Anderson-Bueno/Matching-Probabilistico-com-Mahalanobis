@@ -1,0 +1,4 @@
+,frequencia_total,ticket_medio,quantidade_media,ticket_std,quantidade_std,recencia_exponencial,tempo_ultima_compra_dias,ticket_log_medio,quantidade_log_media,qtd_quadrado_medio
+baixo_valor_baixa_freq,1,15.0,1.0,5.0,0.5,0.1,300,2.5,0.7,1.5
+moderado,5,50.0,3.0,10.0,1.0,0.5,90,3.7,1.1,9.0
+vip_recente,10,120.0,6.0,25.0,2.0,0.9,10,4.8,1.8,36.0
