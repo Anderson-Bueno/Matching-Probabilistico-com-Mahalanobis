@@ -1,4 +1,4 @@
-Exemplo de como o script original poderia ser reescrito para PySpark. 
+# Exemplo de como o script original poderia ser reescrito para PySpark. 
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
